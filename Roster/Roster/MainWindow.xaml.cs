@@ -1,26 +1,13 @@
-﻿using Newtonsoft.Json;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
 using System.Runtime.InteropServices;
-using Excel = Microsoft.Office.Interop.Excel;
-using System.Diagnostics;
-using System.Reflection;
 using System.IO;
 using System.Threading;
-using System.Windows.Threading;
-using System.ComponentModel;
 
 namespace Roster
 {
@@ -32,9 +19,25 @@ namespace Roster
         [DllImport("user32.dll")]
         private static extern int GetWindowThreadProcessId(int hWnd, out int lpdwProcessId);
         private readonly SynchronizationContext synchronizationContext = SynchronizationContext.Current;
-        private string PhoneDirectory = @"S:\EmployeeDirectory\PhoneDirectory.xls";
+        private static string ConfigurationFile = System.IO.Path.Combine(Environment.CurrentDirectory, "configuration.txt");
+        private static string L4ManagerFile = System.IO.Path.Combine(Environment.CurrentDirectory, "L4S.txt");
+        private static string PhoneDirectory = string.Empty;
         private List<Employee> Entries = new List<Employee>();
-        List<string> L4S = File.ReadAllLines(@"C:\Users\mcoupland\Documents\Visual Studio 2017\Projects\Roster\Roster\L4S.txt").ToList<string>();
+        List<string> L4S = File.ReadAllLines(L4ManagerFile).ToList<string>();
+
+        public static void LoadSettings()
+        {
+            string line = string.Empty;
+            Dictionary<string, string> settings = new Dictionary<string, string>();
+            using (StreamReader file = new StreamReader(ConfigurationFile))
+            {
+                while ((line = file.ReadLine()) != null)
+                {
+                    settings.Add(line.Split('=')[0], $@"{line.Split('=')[1].Replace("\\n", Environment.NewLine)}");  // \n Doesn't work unless we do this
+                }
+            }
+            PhoneDirectory = settings.Where(x => x.Key == "PhoneDirectory").FirstOrDefault().Value.ToString();
+        }
 
         public MainWindow()
         {
@@ -44,13 +47,15 @@ namespace Roster
 
         private void MainWindow_ContentRendered(object sender, EventArgs e)
         {
-            if(!File.Exists(PhoneDirectory))
+            LoadSettings();
+            L4S = File.ReadAllLines(L4ManagerFile).ToList<string>();
+            if (!File.Exists(PhoneDirectory))
             {
                 MessageBox.Show($"Source file is stored at {PhoneDirectory}.  Please map this folder to the appropriate drive and restart the application.", "Could not find source file.");
                 this.Close();
                 return;
             }
-            ImportFromExcel();
+            ImportExcel();
         }
 
         private void SearchButton_Click(object sender, RoutedEventArgs ea)
@@ -82,52 +87,18 @@ namespace Roster
             AddValueToGrid("Department", 0, 3, OutputGrid, null, false);
         }
 
-        private async void ImportFromExcel()
+        private void ImportExcel()
         {
-            Mouse.OverrideCursor = Cursors.AppStarting;            
-            #region Prepare Excel
-            Excel.Application application = new Excel.Application() { Visible = false };
-            application.UserControl = false;
-            application.DisplayAlerts = false;
-            Excel.Workbook book = application.Workbooks.Open(PhoneDirectory);
-            Excel.Worksheet sheet = book.Sheets[1];
-            Excel.Range range = sheet.UsedRange;
-            #endregion
+            Mouse.OverrideCursor = Cursors.AppStarting;
+            ExcelProcessor processor = new ExcelProcessor();
+            processor.ProgressUpdated += Processor_ProgressUpdated;
+            processor.ProcessingComplete += Processor_ProcessingComplete;
+            processor.ImportFromExcel(PhoneDirectory, L4S);
+        }
 
-            await Task.Run(() =>
-            {
-                for (int i = 1; i < range.Rows.Count; i++)
-                {
-                    Employee entry = new Employee();
-                    entry.LastName = range.Cells[i, 1].Value2;
-                    entry.FirstName = range.Cells[i, 2].Value2;
-                    if(entry.LastName == "Kemp")
-                    {
-                        int x = 0;
-                    }
-                    entry.MiddleName = range.Cells[i, 3].Value2;
-                    entry.NickName = range.Cells[i, 5].Value2;
-                    entry.ManagerLastName = range.Cells[i, 14].Value2;
-                    entry.ManagerFirstName = range.Cells[i, 15].Value2;
-                    entry.ManagerMiddleName = range.Cells[i, 16].Value2;
-                    entry.Division = range.Cells[i, 8].Value2;
-                    entry.Department = range.Cells[i, 9].Value2;
-                    if (L4S.Contains(entry.FullName))
-                    {
-                        entry.IsL4 = true;
-                    }
-                    Entries.Add(entry);
-                    UpdateUI(entry.FullName, i, range.Rows.Count - 1);
-                }
-            });
-            Entries.Sort();
-
-            #region Close Excel
-            book.Close(0);
-            application.Quit();
-            Marshal.ReleaseComObject(application);
-            #endregion
-
+        private void Processor_ProcessingComplete(object sender, ProcessingCompleteArgs e)
+        {
+            Entries = e.Entries;
             AddEntriesToGrid(Entries);
             AddHeadersToGrid();
             Search.Focus();
@@ -136,6 +107,11 @@ namespace Roster
             Mouse.OverrideCursor = Cursors.Arrow;
         }
 
+        private void Processor_ProgressUpdated(object sender, ProgressUpdatedArgs e)
+        {
+            UpdateUI(e.Message);
+        }
+        
         private void AddEntriesToGrid(List<Employee> entries)
         {
             OutputGrid.Children.Clear();
@@ -219,14 +195,18 @@ namespace Roster
             Mouse.OverrideCursor = Cursors.Hand;
         }
 
-        public void UpdateUI(string name, int count, int total)
+        public void UpdateUI(string message)
         {
-            synchronizationContext.Post(new SendOrPostCallback(o =>
-            {
-                Loading.HorizontalContentAlignment = HorizontalAlignment.Left;
-                Loading.Content = $"{count.ToString("000")}/{total}: {name}";
-            }), name);
-            
+            synchronizationContext.Post(
+                new SendOrPostCallback(
+                    o =>
+                    {
+                        Loading.HorizontalContentAlignment = HorizontalAlignment.Left;
+                        Loading.Content = message;
+                    }
+                ), 
+                null
+            );
         }
     }
 }
